@@ -244,63 +244,57 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                     NULL AS {parent_col}
                 """.format(**locals()))
 
-            vct1 = plpy.execute("""
+            vct = plpy.execute("""
                 SELECT COUNT(*) 
                 FROM {edge_table} 
                 WHERE 
-                    {src} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}) 
-                    AND 
-                    {dest} not IN (SELECT {vertex_id} FROM {out_table})
+                    ({src} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}) 
+                        AND 
+                        {dest} not IN (SELECT {vertex_id} FROM {out_table}))
+                    OR
+                    ({dest} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}) 
+                        AND 
+                        {src} NOT IN (SELECT {vertex_id} FROM {out_table}))
                 """.format(**locals()))[0]['count']
-            vct2 = plpy.execute("""
-                SELECT COUNT(*) 
-                FROM {edge_table} 
-                WHERE 
-                    {dest} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}) 
-                    AND 
-                    {src} NOT IN (SELECT {vertex_id} FROM {out_table})
-                """.format(**locals()))[0]['count']
-            vct = vct1 + vct2
+            #vct = vct1 + vct2
 
         while vct > 0:
             curr_dist_val = curr_dist_val + 1
             
             plpy.execute("""
                 INSERT INTO {out_table}
-                SELECT {dest}, {curr_dist_val}, {src}
-                FROM {edge_table} 
-                WHERE 
-                    {src} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}-1) 
-                    AND 
-                    {dest} NOT IN (SELECT {vertex_id} FROM {out_table})
+                SELECT {vertex_id}, {dist_col}, min({parent_col})
+                FROM 
+                (
+                    SELECT {dest} AS {vertex_id}, {curr_dist_val} AS {dist_col}, {src} AS {parent_col}
+                    FROM {edge_table} 
+                    WHERE 
+                        {src} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}-1) 
+                        AND 
+                        {dest} NOT IN (SELECT {vertex_id} FROM {out_table})
+                    UNION
+                    SELECT {src} AS {vertex_id}, {curr_dist_val} AS {dist_col}, {dest} AS {parent_col}
+                    FROM {edge_table} 
+                    WHERE 
+                        {dest} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}-1) 
+                        AND 
+                        {src} NOT IN (SELECT {vertex_id} FROM {out_table})
+                ) t1
+                GROUP BY 1,2
             """.format(**locals()))
 
-            plpy.execute("""
-                INSERT INTO {out_table}
-                SELECT {src}, {curr_dist_val}, {dest}
-                FROM {edge_table} 
-                WHERE 
-                    {dest} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}-1) 
-                    AND 
-                    {src} NOT IN (SELECT {vertex_id} FROM {out_table})
-            """.format(**locals()))
-
-            vct1 = plpy.execute("""
+            vct = plpy.execute("""
                 SELECT COUNT(*) 
                 FROM {edge_table} 
                 WHERE 
-                    {src} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}) 
-                    AND 
-                    {dest} NOT IN (SELECT {vertex_id} FROM {out_table})
+                    ({src} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}) 
+                        AND 
+                        {dest} not IN (SELECT {vertex_id} FROM {out_table}))
+                    OR
+                    ({dest} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}) 
+                        AND 
+                        {src} NOT IN (SELECT {vertex_id} FROM {out_table}))
                 """.format(**locals()))[0]['count']
-            vct2 = plpy.execute("""
-                SELECT COUNT(*) 
-                FROM {edge_table} 
-                WHERE 
-                    {dest} IN (SELECT {vertex_id} FROM {out_table} WHERE {dist_col}={curr_dist_val}) 
-                    AND 
-                    {src} NOT IN (SELECT {vertex_id} FROM {out_table})
-                """.format(**locals()))[0]['count']
-            vct = vct1 + vct2
+            #vct = vct1 + vct2
 
     return None
