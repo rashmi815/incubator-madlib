@@ -35,9 +35,6 @@ from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import split_quoted_delimited_str
 from utilities.validate_args import table_exists
 from utilities.validate_args import columns_exist_in_table
-from utilities.validate_args import table_is_empty
-from utilities.validate_args import get_cols_and_types
-from utilities.validate_args import get_expr_type
 
 m4_changequote(`<!', `!>')
 
@@ -48,8 +45,11 @@ def _validate_bfs(vertex_table, vertex_id, edge_table, edge_params,
         out_table,'BFS')
 
     _assert((max_distance >= 0) and isinstance(max_distance,int),
-        """Graph BFS: Invalid max_distance type or value ({0}), must be integer, be greater than or equal to 0 and be less than max allowable integer (2147483647).""".
+        """Graph BFS: Invalid max_distance type or value ({0}), must be integer, 
+        be greater than or equal to 0 and be less than max allowable integer 
+        (2147483647).""".
         format(max_distance))
+
     _assert(isinstance(directed,bool),
         """Graph BFS: Invalid value for directed ({0}), must be boolean.""".
         format(directed))
@@ -62,7 +62,8 @@ def _validate_bfs(vertex_table, vertex_id, edge_table, edge_params,
         """.format(**locals()))
     if src_exists.nrows() == 0:
         plpy.error(
-            """Graph BFS: Source vertex {source_vertex} is not present in the vertex table {vertex_table}.""".
+            """Graph BFS: Source vertex {source_vertex} is not present in the 
+            vertex table {vertex_table}.""".
             format(**locals()))
 
     vt_error = plpy.execute(
@@ -71,18 +72,19 @@ def _validate_bfs(vertex_table, vertex_id, edge_table, edge_params,
             WHERE {vertex_id} IS NOT NULL
             GROUP BY {vertex_id}
             HAVING count(*) > 1 """.format(**locals()))
-
     if vt_error.nrows() != 0:
         plpy.error(
-            """Graph SSSP: Source vertex table {vertex_table} contains duplicate vertex id's.""".
+            """Graph BFS: Source vertex table {vertex_table} contains duplicate 
+            vertex id's.""".
             format(**locals()))
 
     _assert(not table_exists(out_table+"_summary"),
-        "Graph SSSP: Output summary table already exists!")
+        "Graph BFS: Output summary table already exists!")
 
     if grouping_cols_list is not None:
         _assert(columns_exist_in_table(edge_table, grouping_cols_list),
-            """Graph SSSP: Not all columns from {grouping_cols_list} are present in edge table ({edge_table}).""".
+            """Graph BFS: Not all columns from {grouping_cols_list} are present 
+            in edge table ({edge_table}).""".
             format(**locals()))
 
     return None
@@ -178,7 +180,6 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
         local_distribution = m4_ifdef(<!__POSTGRESQL__!>, <!''!>,
             <!"DISTRIBUTED BY (id)"!>)
 
-        # is_hawq = m4_ifdef(<!__HAWQ__!>, <!True!>, <!False!>)
         _validate_bfs(vertex_table, vertex_id, edge_table,
             edge_params, source_vertex, out_table, max_distance, directed, glist)
 
@@ -189,9 +190,6 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
         if grouping_cols is not None:
             grp_comma = grouping_cols + ", "
             and_grp_null_checks = " AND " + _grp_null_checks(glist)
-
-            plpy.info("grp_comma = {0}".format(grp_comma))
-            plpy.info("and_grp_null_checks = {0}".format(and_grp_null_checks))
             
         # We keep a table of every vertex, the distance to that vertex from source
         # and the parent in the path to the vertex
@@ -200,10 +198,7 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
         parent_col = "parent"
         curr_dist_val = 0
 
-        # Using the CTAS statement so that data types for grouping columns
-        # need not be explicitly specified but rather implicitly obtained
-        # from the edge table. {src} is used for two columns in the this statement
-        # as they will have the same data type
+        # Creating the output table with the appropriate columns and data types
         plpy.execute("""
             CREATE TABLE {out_table} AS ( 
                 SELECT
@@ -262,10 +257,6 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                 GROUP BY {grp_comma} {vertex_id}, {dist_col}
             """.format(**locals()))
 
-            # Checks for NULLs in the grouping columns are not needed in the 
-            # query below due to the behavior of the query in the presence 
-            # of the where clause as written. This where clause automatically
-            # filters out any rows where one or more grouping columns are NULL
             vct = plpy.execute("""
                 SELECT COUNT(*)
                 FROM {edge_table} 
@@ -275,7 +266,9 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                         WHERE {dist_col}={curr_dist_val}
                     ) 
                     AND 
-                    ({grp_comma} {dest}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
+                    ({grp_comma} {dest}) NOT IN (
+                        SELECT {grp_comma} {vertex_id} FROM {out_table}
+                    )
                 )
             """.format(**locals()))[0]['count']
 
@@ -302,25 +295,38 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                         WHERE {dist_col}={curr_dist_val}
                     ) 
                     AND 
-                    ({grp_comma} {dest}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
+                    ({grp_comma} {dest}) NOT IN (
+                        SELECT {grp_comma} {vertex_id} FROM {out_table}
+                    )
                 ) OR (
                     ({grp_comma} {dest}) IN ( 
                         SELECT {grp_comma} {vertex_id} FROM {out_table} 
                         WHERE {dist_col}={curr_dist_val}
                     ) 
                     AND 
-                    ({grp_comma} {src}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
+                    ({grp_comma} {src}) NOT IN (
+                        SELECT {grp_comma} {vertex_id} FROM {out_table}
+                    )
                 )
             """.format(**locals()))[0]['count']
         
-        plpy.info("vct = {0}".format(vct))
-        plpy.info("max_distance = {0}".format(max_distance))
-
         # Main loop for traversing the graph
         while vct > 0 and curr_dist_val < max_distance:
-            plpy.info("curr_dist_val = {0}".format(curr_dist_val))
+
+            # The loop consists of two steps:
+            # 1) Disover and store all nodes that are linked to nodes found in 
+            #    the immediate previous iteration of the loop that have not already 
+            #    been found in all previous iterations  
+            # 2) Check for any nodes linked to those discovered in Step 1 above
+            #    that have not yet been discovered
+            # 
+            # If a node has multiple possible parents then the node with the 
+            # smalles ID is chosen as the parent for output
 
             if directed:
+                # In the directed graph case only nodes in the {dest} column of 
+                # the edge table are searched to find new nodes reachable from 
+                # previously discovered nodes
                 plpy.execute("""
                     INSERT INTO {out_table}
                     SELECT {grp_comma} {vertex_id}, {dist_col}, min({parent_col})
@@ -336,13 +342,14 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                                 WHERE {dist_col}={curr_dist_val}
                             ) 
                             AND 
-                            ({grp_comma} {dest}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
+                            ({grp_comma} {dest}) NOT IN (
+                                SELECT {grp_comma} {vertex_id} FROM {out_table}
+                            )
                         )
                     ) t1
                     GROUP BY {grp_comma} {vertex_id}, {dist_col}
                 """.format(**locals()))
 
-                #plpy.info()
                 curr_dist_val = curr_dist_val + 1
 
                 vct = plpy.execute("""
@@ -354,14 +361,22 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                             WHERE {dist_col}={curr_dist_val}
                         ) 
                         AND 
-                        ({grp_comma} {dest}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
+                        ({grp_comma} {dest}) NOT IN (
+                            SELECT {grp_comma} {vertex_id} FROM {out_table}
+                        )
                     )
                 """.format(**locals()))[0]['count']
-
-                plpy.info("curr_dist_val = {0}".format(curr_dist_val))
-                plpy.info("vct = {0}".format(vct))
                 
             else:
+                # In the undirected graph case edges are treated as non-directional 
+                # (or bidirectional). Nodes in both the {src} and {dest} columns of 
+                # the edge table are searched to find new nodes reachable from 
+                # previously discovered nodes.
+                # This approach does NOT require the user to provide a forward edge
+                # and a reverse edge between the same two nodes to indicate the 
+                # graph's undirected nature. However, it will work in that scenario
+                # as well.
+
                 plpy.execute("""
                     INSERT INTO {out_table}
                     SELECT {grp_comma} {vertex_id}, {dist_col}, min({parent_col})
@@ -377,7 +392,9 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                                 WHERE {dist_col}={curr_dist_val}
                             ) 
                             AND 
-                            ({grp_comma} {dest}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
+                            ({grp_comma} {dest}) NOT IN (
+                                SELECT {grp_comma} {vertex_id} FROM {out_table}
+                            )
                         )
                         UNION
                         SELECT {grp_comma} 
@@ -391,7 +408,9 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                                 WHERE {dist_col}={curr_dist_val}
                             ) 
                             AND 
-                            ({grp_comma} {src}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
+                            ({grp_comma} {src}) NOT IN (
+                                SELECT {grp_comma} {vertex_id} FROM {out_table}
+                            )
                         )
                     ) t1
                     GROUP BY {grp_comma} {vertex_id}, {dist_col}
@@ -408,18 +427,19 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                             WHERE {dist_col}={curr_dist_val}
                         ) 
                         AND 
-                        ({grp_comma} {dest}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
+                        ({grp_comma} {dest}) NOT IN (
+                            SELECT {grp_comma} {vertex_id} FROM {out_table}
+                        )
                     ) OR (
                         ({grp_comma} {dest}) IN ( 
                             SELECT {grp_comma} {vertex_id} FROM {out_table} 
                             WHERE {dist_col}={curr_dist_val}
                         ) 
                         AND 
-                        ({grp_comma} {src}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
+                        ({grp_comma} {src}) NOT IN (
+                            SELECT {grp_comma} {vertex_id} FROM {out_table}
+                        )
                     )
                     """.format(**locals()))[0]['count']
-
-                plpy.info("curr_dist_val = {0}".format(curr_dist_val))
-                plpy.info("vct = {0}".format(vct))
 
     return None
