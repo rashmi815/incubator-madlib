@@ -184,16 +184,14 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
 
         # Initialize grouping related variables
         grp_comma = ""
-        group_by = ""
-        grp_null_checks = _grp_null_checks(glist)
-        plpy.info("grp_null_checks = {0}".format(grp_null_checks))
+        and_grp_null_checks = ""
 
         if grouping_cols is not None:
-            group_by = " GROUP BY " + grouping_cols
-            grp_comma = grouping_cols + " , "
+            grp_comma = grouping_cols + ", "
+            and_grp_null_checks = " AND " + _grp_null_checks(glist)
 
-            plpy.info("group_by = {0}".format(group_by))
             plpy.info("grp_comma = {0}".format(grp_comma))
+            plpy.info("and_grp_null_checks = {0}".format(and_grp_null_checks))
             
         # We keep a table of every vertex, the distance to that vertex from source
         # and the parent in the path to the vertex
@@ -260,13 +258,16 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                     NULL AS {parent_col}
                 FROM {edge_table}
                 WHERE {src} = {source_vertex}
-                    AND
-                    {grp_null_checks}
-                {group_by}
+                    {and_grp_null_checks}
+                GROUP BY {grp_comma} {vertex_id}, {dist_col}
             """.format(**locals()))
 
-            vct_grp = plpy.execute("""
-                SELECT {grp_comma} COUNT(*) 
+            # Checks for NULLs in the grouping columns are not needed in the 
+            # query below due to the behavior of the query in the presence 
+            # of the where clause as written. This where clause automatically
+            # filters out any rows where one or more grouping columns are NULL
+            vct = plpy.execute("""
+                SELECT COUNT(*)
                 FROM {edge_table} 
                 WHERE (
                     ({grp_comma} {src}) IN (
@@ -275,9 +276,9 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                     ) 
                     AND 
                     ({grp_comma} {dest}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
-                ) 
-                {group_by}
-                """.format(**locals())) #[0]['count']
+                )
+            """.format(**locals()))[0]['count']
+
         else:
             plpy.execute("""
                 INSERT INTO {out_table}
@@ -288,13 +289,12 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                 FROM {edge_table}
                 WHERE 
                     ({src} = {source_vertex} OR {dest} = {source_vertex})
-                    AND
-                    {grp_null_checks}
-                {group_by}
+                    {and_grp_null_checks}
+                GROUP BY {grp_comma} {vertex_id}, {dist_col}
             """.format(**locals()))
 
-            vct_grp = plpy.execute("""
-                SELECT {grp_comma} COUNT(*) 
+            vct = plpy.execute("""
+                SELECT COUNT(*)
                 FROM {edge_table} 
                 WHERE (
                     ({grp_comma} {src}) IN ( 
@@ -311,51 +311,16 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                     AND 
                     ({grp_comma} {src}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
                 )
-                {group_by}
-                """.format(**locals())) #[0]['count']
-
-        plpy.info("vct_grp datatype: {0}".format(type(vct_grp)))
-        plpy.info("vct_grp.nrows() = {0}".format(vct_grp.nrows()))
-        plpy.info("len(vct_grp) = {0}".format(len(vct_grp)))
-
-        vct = [vct_grp[i]['count'] for i in range(len(vct_grp))]
-        plpy.info("vct = {0}".format(vct))
-        for i in range(0,len(vct_grp)):
-            # plpy.info("i = {0}".format(i))
-            # vct = vct_grp[i]['count']
-            plpy.info("vct[{0}] = {1}".format(i,vct[i]))
-        # plpy.info("vct = {0}".format(vct))
+            """.format(**locals()))[0]['count']
         
-        vct_min = min(vct)
-        plpy.info("vct_min = {0}".format(vct_min))
-
+        plpy.info("vct = {0}".format(vct))
         plpy.info("max_distance = {0}".format(max_distance))
-        while vct_min > 0 and curr_dist_val < max_distance:
+
+        # Main loop for traversing the graph
+        while vct > 0 and curr_dist_val < max_distance:
             plpy.info("curr_dist_val = {0}".format(curr_dist_val))
 
             if directed:
-                query_text = """
-                    INSERT INTO {out_table}
-                    SELECT {grp_comma} {vertex_id}, {dist_col}, min({parent_col})
-                    FROM (
-                        SELECT {grp_comma} 
-                            {dest} AS {vertex_id}, 
-                            {curr_dist_val}+1 AS {dist_col}, 
-                            {src} AS {parent_col}
-                        FROM {edge_table} 
-                        WHERE (
-                            ({grp_comma} {src}) IN (
-                                SELECT {grp_comma} {vertex_id} FROM {out_table} 
-                                WHERE {dist_col}={curr_dist_val}
-                            ) 
-                            AND 
-                            ({grp_comma} {dest}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
-                        )
-                    ) t1
-                    {group_by} , {vertex_id}, {dist_col}
-                """.format(**locals())
-                plpy.info("query_text: {0}".format(query_text))
-
                 plpy.execute("""
                     INSERT INTO {out_table}
                     SELECT {grp_comma} {vertex_id}, {dist_col}, min({parent_col})
@@ -374,14 +339,14 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                             ({grp_comma} {dest}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
                         )
                     ) t1
-                    {group_by} , {vertex_id}, {dist_col}
+                    GROUP BY {grp_comma} {vertex_id}, {dist_col}
                 """.format(**locals()))
 
                 #plpy.info()
                 curr_dist_val = curr_dist_val + 1
 
-                vct_grp = plpy.execute("""
-                    SELECT {grp_comma} COUNT(*) 
+                vct = plpy.execute("""
+                    SELECT COUNT(*) 
                     FROM {edge_table} 
                     WHERE (
                         ({grp_comma} {src}) IN ( 
@@ -391,15 +356,11 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                         AND 
                         ({grp_comma} {dest}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
                     )
-                    {group_by}""".format(**locals()))
-
-                vct = [vct_grp[i]['count'] for i in range(len(vct_grp))]
-                plpy.info("vct = {0}".format(vct))
-                vct_min = min(vct)
+                """.format(**locals()))[0]['count']
 
                 plpy.info("curr_dist_val = {0}".format(curr_dist_val))
                 plpy.info("vct = {0}".format(vct))
-
+                
             else:
                 plpy.execute("""
                     INSERT INTO {out_table}
@@ -433,13 +394,13 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                             ({grp_comma} {src}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
                         )
                     ) t1
-                    {group_by} , {vertex_id}, {dist_col}
+                    GROUP BY {grp_comma} {vertex_id}, {dist_col}
                 """.format(**locals()))
 
                 curr_dist_val = curr_dist_val + 1
                 
                 vct = plpy.execute("""
-                    SELECT {grp_comma} COUNT(*) 
+                    SELECT COUNT(*) 
                     FROM {edge_table} 
                     WHERE (
                         ({grp_comma} {src}) IN ( 
@@ -456,10 +417,7 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                         AND 
                         ({grp_comma} {src}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
                     )
-                    {group_by}""".format(**locals()))
-
-                vct = [vct_grp[i]['count'] for i in range(len(vct_grp))]
-                vct_min = min(vct)
+                    """.format(**locals()))[0]['count']
 
                 plpy.info("curr_dist_val = {0}".format(curr_dist_val))
                 plpy.info("vct = {0}".format(vct))
