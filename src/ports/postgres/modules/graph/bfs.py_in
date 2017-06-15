@@ -17,12 +17,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Single Source Shortest Path
+# Breadth-First Search
 
-# Please refer to the sssp.sql_in file for the documentation
+# Please refer to the bfs.sql_in file for the documentation
 
 """
-@file sssp.py_in
+@file bfs.py_in
 
 @namespace graph
 """
@@ -32,8 +32,6 @@ from graph_utils import *
 from utilities.control import MinWarning
 from utilities.utilities import _assert
 from utilities.utilities import extract_keyvalue_params
-from utilities.utilities import unique_string
-from utilities.utilities import _string_to_array
 from utilities.utilities import split_quoted_delimited_str
 from utilities.validate_args import table_exists
 from utilities.validate_args import columns_exist_in_table
@@ -100,6 +98,17 @@ def _grp_from_table(tbl, grp_list):
     return ' , '.join([" {tbl}.{i} ".format(**locals())
         for i in grp_list])
 
+def _grp_null_checks(grp_list):
+
+    """
+    Helper function for generating NULL checks for grouping columns 
+    to be used within a WHERE clause
+    Args:
+        @param grp_list   The list of grouping columns
+    """
+    return ' AND '.join([" {i} IS NOT NULL ".format(**locals())
+        for i in grp_list])
+
 def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
         edge_args, source_vertex, out_table, max_distance, directed, grouping_cols, **kwargs):
 
@@ -126,11 +135,6 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
         INT_MAX = 2147483647
         INFINITY = "'Infinity'"
         EPSILON = 0.000001
-
-        message = unique_string(desp='message')
-
-        # oldupdate = unique_string(desp='oldupdate')
-        # newupdate = unique_string(desp='newupdate')
 
         params_types = {'src': str, 'dest': str, 'weight': str}
         default_args = {'src': 'src', 'dest': 'dest', 'weight': 'weight'}
@@ -178,12 +182,11 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
         _validate_bfs(vertex_table, vertex_id, edge_table,
             edge_params, source_vertex, out_table, max_distance, directed, glist)
 
-        # plpy.execute(" DROP TABLE IF EXISTS {0},{1},{2}".format(
-        #     message,oldupdate,newupdate))
-
         # Initialize grouping related variables
         grp_comma = ""
         group_by = ""
+        grp_null_checks = _grp_null_checks(glist)
+        plpy.info("grp_null_checks = {0}".format(grp_null_checks))
 
         if grouping_cols is not None:
             group_by = " GROUP BY " + grouping_cols
@@ -192,22 +195,17 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
             plpy.info("group_by = {0}".format(group_by))
             plpy.info("grp_comma = {0}".format(grp_comma))
             
-            # checkg_oo_sub = _check_groups(out_table,"oldupdate",glist)
-            # checkg_oo = " AND " + checkg_oo_sub
-            # checkg_eo = " AND " + _check_groups(edge_table,"oldupdate",glist)
-            # checkg_ex = " AND " + _check_groups(edge_table,"x",glist)
-            # checkg_om = " AND " + _check_groups("out_table","message",glist)
-
         # We keep a table of every vertex, the distance to that vertex from source
+        # and the parent in the path to the vertex
         # This table will be updated throughout the execution.
         dist_col = "dist"
         parent_col = "parent"
         curr_dist_val = 0
 
-        # Using the CTAS statement so that data types for things like grouping
+        # Using the CTAS statement so that data types for grouping columns
         # need not be explicitly specified but rather implicitly obtained
         # from the edge table. {src} is used for two columns in the this statement
-        # as it will have the same data type as the columns in question
+        # as they will have the same data type
         plpy.execute("""
             CREATE TABLE {out_table} AS ( 
                 SELECT
@@ -239,27 +237,20 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                 {source_vertex}, '{out_table}', {d_st}, {dir_st}, '{g_st}')
             """.format(**locals()))
 
-        # The initialization step is quite different when grouping is involved
-        # since not every group (subgraph) will have the same set of vertices.
-
-        # Example:
-        # Assume there are two grouping columns g1 and g2
-        # g1 values are 0 and 1. g2 values are 5 and 6
         
-        # plpy.execute("""
-        #     INSERT INTO {out_table}
-        #     SELECT {grp_comma} 
-        #         {source_vertex} AS {vertex_id},
-        #         {curr_dist_val} AS {dist_col},
-        #         NULL AS {parent_col}
-        #     FROM {edge_table}
-        #     WHERE {src} = {source_vertex} OR {dest} = {source_vertex}
-        #     {group_by}
-        #     """.format(**locals()))
+        # Initialization is different for directed and undirected graphs
+        # In the undirected case edges can be considered to go from {src} to
+        # {dest} and {dest} to {src}
 
-        # if grouping_cols is not None:
-        #     vct = 0
-        # else:
+        # This step inserts into the output table the source vertex for each 
+        # group in which it is present. Grouping behavior is not predictable
+        # when there are NULLs in any grouping column. Therefore those rows
+        # are explicitly removed from analysis
+
+        # After initialization of the output table, number of nodes connected
+        # by edges to the source vertex in each group is counted. This is used 
+        # below in the BFS iteration loop
+
         if directed:
             plpy.execute("""
                 INSERT INTO {out_table}
@@ -269,6 +260,8 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                     NULL AS {parent_col}
                 FROM {edge_table}
                 WHERE {src} = {source_vertex}
+                    AND
+                    {grp_null_checks}
                 {group_by}
             """.format(**locals()))
 
@@ -293,7 +286,10 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                     {curr_dist_val} AS {dist_col},
                     NULL AS {parent_col}
                 FROM {edge_table}
-                WHERE {src} = {source_vertex} OR {dest} = {source_vertex}
+                WHERE 
+                    ({src} = {source_vertex} OR {dest} = {source_vertex})
+                    AND
+                    {grp_null_checks}
                 {group_by}
             """.format(**locals()))
 
@@ -340,22 +336,23 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
             if directed:
                 query_text = """
                     INSERT INTO {out_table}
-                        SELECT {vertex_id}, {dist_col}, min({parent_col})
-                        FROM (
-                            SELECT {dest} AS {vertex_id}, 
-                                {curr_dist_val}+1 AS {dist_col}, 
-                                {src} AS {parent_col}
-                            FROM {edge_table} 
-                            WHERE (
-                                {src} IN (
-                                    SELECT {vertex_id} FROM {out_table} 
-                                    WHERE {dist_col}={curr_dist_val}
-                                ) 
-                                AND 
-                                {dest} NOT IN (SELECT {vertex_id} FROM {out_table})
-                            )
-                        ) t1
-                        GROUP BY 1,2
+                    SELECT {grp_comma} {vertex_id}, {dist_col}, min({parent_col})
+                    FROM (
+                        SELECT {grp_comma} 
+                            {dest} AS {vertex_id}, 
+                            {curr_dist_val}+1 AS {dist_col}, 
+                            {src} AS {parent_col}
+                        FROM {edge_table} 
+                        WHERE (
+                            ({grp_comma} {src}) IN (
+                                SELECT {grp_comma} {vertex_id} FROM {out_table} 
+                                WHERE {dist_col}={curr_dist_val}
+                            ) 
+                            AND 
+                            ({grp_comma} {dest}) NOT IN (SELECT {grp_comma} {vertex_id} FROM {out_table})
+                        )
+                    ) t1
+                    {group_by} , {vertex_id}, {dist_col}
                 """.format(**locals())
                 plpy.info("query_text: {0}".format(query_text))
 
@@ -380,6 +377,7 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                     {group_by} , {vertex_id}, {dist_col}
                 """.format(**locals()))
 
+                #plpy.info()
                 curr_dist_val = curr_dist_val + 1
 
                 vct_grp = plpy.execute("""
@@ -396,6 +394,7 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                     {group_by}""".format(**locals()))
 
                 vct = [vct_grp[i]['count'] for i in range(len(vct_grp))]
+                plpy.info("vct = {0}".format(vct))
                 vct_min = min(vct)
 
                 plpy.info("curr_dist_val = {0}".format(curr_dist_val))
